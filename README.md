@@ -26,9 +26,9 @@ This Python application uses gpsd to read GPS data from a connected GPS device, 
 ## Installation
 
 1. Clone the repository:
-'''
-git clone https://github.com/yourusername/gps2mqtt.git
-'''
+```
+git clone https://github.com/rv10guy/gps2mqtt.git
+```
 
 2. Change to the `gps2mqtt` directory:
 ```
