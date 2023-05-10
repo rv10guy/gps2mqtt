@@ -1,3 +1,6 @@
+# Copyright (c) 2023 Scott Wright. All rights reserved.
+# This code is licensed under the MIT License.
+
 import os, math, time, threading, queue, datetime, paho.mqtt.client as mqtt, configparser
 from gps import *
 
