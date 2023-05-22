@@ -1,61 +1,56 @@
 # Copyright (c) 2023 Scott Wright. All rights reserved.
 # This code is licensed under the MIT License.
 
-import os, math, time, threading, queue, datetime, paho.mqtt.client as mqtt, configparser, urllib.request, socket, haversine, atexit
+import os, math, time, threading, queue, datetime, paho.mqtt.client as mqtt, configparser, urllib.request, socket, haversine, atexit, logging
 from gps import *
 
 # Read the MQTT broker settings from the config file
 config = configparser.ConfigParser(inline_comment_prefixes=';')
 config.read('gps2mqtt.ini')
+log_level = config['Logging']['level'].upper()
+log_file = config['Logging'].get('logfile')
+interval_always = int(config['General']['interval_always'])
+interval_move = int(config['General']['interval_move'])
+interval_track = int(config['General']['interval_track'])
+dist_move = int(config['General']['dist_move'])
+chg_speed = int(config['General']['chg_speed'])
+chg_track = int(config['General']['chg_track'])
+gps_timeout = int(config['General']['gps_timeout'])
+ignore_speed = int(config['General']['ignore_speed'])
+mqtt_enabled = config['MQTT'].get('enabled').lower() in ['true', 'yes', '1']
 mqtt_broker = config['MQTT']['broker']
 mqtt_port = int(config['MQTT']['port'])
 mqtt_username = config['MQTT']['username']  
 mqtt_password = config['MQTT']['password'] 
 mqtt_topic_prefix = config['MQTT']['topic_prefix'] 
 mqtt_retain = config['MQTT'].get('retain').lower() in ['true', 'yes', '1']
-debug = config['General'].get('debug').lower() in ['true', 'yes', '1']
 traccar_enabled = config['Traccar'].get('enabled').lower() in ['true', 'yes', '1']
-TRACCARURL = config['Traccar']['url']
-TRACCARID = config['Traccar']['id']
-interval_always = int(config['General']['interval_always'])
-interval_move = int(config['General']['interval_move'])
-interval_track = int(config['General']['interval_track'])
-ignore_speed = int(config['General']['ignore_speed'])
-dist_move = int(config['General']['dist_move'])
-chg_speed = int(config['General']['chg_speed'])
-chg_track = int(config['General']['chg_track'])
-gps_timeout = int(config['General']['gps_timeout'])
-mqtt_enabled = config['MQTT'].get('enabled').lower() in ['true', 'yes', '1']
+traccar_url = config['Traccar']['url']
+traccar_id = config['Traccar']['id']
 
 def on_connect(client, userdata, flags, rc):
-    if debug:
-        print("Connected to MQTT broker with result code " + str(rc))
+    logging.info("Connected to MQTT broker with result code " + str(rc))
 
 def on_publish(client, userdata, mid):
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if debug:
-        print(f"{current_time}: Message published to MQTT broker with message id {mid}")
+    logging.info(f"{current_time}: Message published to MQTT broker with message id {mid}")
 
 def on_disconnect(client, userdata, rc):
     if rc != 0:
-        print(f"Unexpected MQTT disconnection. Reconnecting...")
+        logging.warning("Unexpected MQTT disconnection. Reconnecting...")
 
 def mqtt_disconnect(client):
     try:
         client.loop_stop()
         client.disconnect()
     except Exception as e:
-        print(f"Failed to disconnect from MQTT broker. Error: {e}")
+        logging.error(f"Failed to disconnect from MQTT broker. Error: {e}")
 
 def meters_to_feet(meters):
     return meters * 3.28084
 
 def meters_per_second_to_mph(mps):
     return mps * 2.23694
-
-def debug_print(debug, message):
-    if debug:
-        print(message)
 
 # Prepare GPS Data for Traccar
 def generate_traccar_report(report):
@@ -91,12 +86,13 @@ def generate_traccar_report(report):
 # Send a report to the Traccar server
 def send_report(msg):
     msg = msg + ('&sendtime=%f' % (time.time()))
-    url = '%s/?id=%s&timestamp=%d%s' % (TRACCARURL, TRACCARID, int(time.time()), msg)
+    url = '%s/?id=%s&timestamp=%d%s' % (traccar_url, traccar_id, int(time.time()), msg)
+    logging.info(f"Sending report to Traccar: {url}")
     try:
         r = urllib.request.urlopen(url)
         return 0
     except urllib.error.URLError as e:
-        print(f"Error in send_report: {e}")
+        logging.error(f"Error in send_report: {e}")
         return 1
 
 def calculate_2d_accuracy(report):
@@ -133,6 +129,7 @@ def hdop_to_accuracy_feet(hdop):
 # Initialize the GPS session
 def init_gps_session():
     return gps(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
+    logging.info("GPS session initialized")
 
 # Worker thread that reads GPS reports from the GPS session and puts them in a queue
 def gps_reports_worker():
@@ -152,7 +149,7 @@ def start_gps_worker_thread():
 # Check if the MQTT connection is still alive. If not, reconnect.
 def ensure_mqtt_connection():
     if not client.is_connected():
-        print("MQTT connection lost. Reconnecting...")
+        logging.warning("MQTT connection lost. Reconnecting...")
         client.reconnect()
 
 def mqtt_process_and_publish(report, attr, conversion=None, threshold=None, topic_suffix=''):
@@ -164,7 +161,7 @@ def mqtt_process_and_publish(report, attr, conversion=None, threshold=None, topi
             new_value = 0
         if new_value != last_values.get(attr):
             client.publish(mqtt_topic_prefix + "/" + topic_suffix, str(new_value), retain=mqtt_retain)
-#            debug_print(debug, f"{attr.capitalize()}: {new_value}")
+            logging.debug("{attr.capitalize()}: {new_value} - Published to MQTT broker")
             last_values[attr] = new_value
 
 def make_mqtt_report(report):
@@ -189,6 +186,18 @@ def bearing_change(b1, b2):
     if r>=180:
         r -= 360
     return(abs(r))
+
+# Check if the retrieved level is valid
+if log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+    raise ValueError(f"Invalid log level: {log_level}")
+
+# Set up logging
+log_handlers = [logging.StreamHandler()]  # Always log to console
+if log_file:
+    log_handlers.append(logging.FileHandler(log_file))  # Also log to file if specified
+
+# Set up logging
+logging.basicConfig(level=log_level)
 
 # Connect to the MQTT broker
 if mqtt_enabled:
@@ -222,15 +231,16 @@ atexit.register(mqtt_disconnect, client)
 while True:
     try:
         report = gps_reports_queue.get(timeout=gps_timeout)
+        logging.debug(f"Received GPS report: {report}")
     except queue.Empty:
-        print(f"GPS report not received within {gps_timeout} seconds. Retrying...")
-        print("Reconnecting to the GPS device...")
+        logging.warning(f"GPS report not received within {gps_timeout} seconds. Retrying...")
+        logging.warning("Reconnecting to the GPS device...")
         init_gps_session()
         start_gps_worker_thread()
         continue
 
     num_reports += 1
-    debug_print(debug, "Received GPS report number " + str(num_reports))
+    logging.debug("Received GPS report number " + str(num_reports))
     ensure_mqtt_connection()
 
     second = int(time.time())
@@ -253,10 +263,13 @@ while True:
     )
 
     if should_make_report:
+        logging.info("Condition met to make report")
         if mqtt_enabled:
+            logging.info("Making MQTT report")
             make_mqtt_report(report)
         
         if traccar_enabled:
+            logging.info("Making Traccar report")
             msg = generate_traccar_report(report)
             send_report(msg)
             

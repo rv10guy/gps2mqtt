@@ -1,5 +1,6 @@
 [General]
-debug = False               ; Enable debug mode
+logging = WARNING           ; Set logging level (INFO, WARNING, ERROR, CRITICAL). INFO should only be used for troubleshooting as it can fill up logs very quickly. 
+logfile =                   ; If specified, log to this file
 interval_always = 60        ; Interval in seconds between GPS reports always
 interval_move = 10          ; Interval in seconds between GPS reports when moving
 interval_track = 2          ; Interval in seconds between GPS reports when move & track changes
