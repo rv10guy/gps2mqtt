@@ -39,7 +39,7 @@ There sample ini file is fully documented. In an effort to reduce load on the MQ
 - Python 3.6 or higher
 - [paho-mqtt](https://pypi.org/project/paho-mqtt/) library
 - [gps3](https://pypi.org/project/gps3/) library
-- [haversine](https://pypi.org/project/haversine/)
+- [haversine](https://pypi.org/project/haversine/) library
 
 ## Installation
 
