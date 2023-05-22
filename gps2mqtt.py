@@ -1,8 +1,23 @@
 # Copyright (c) 2023 Scott Wright. All rights reserved.
 # This code is licensed under the MIT License.
 
-import os, math, time, threading, queue, datetime, paho.mqtt.client as mqtt, configparser
+import os, math, time, threading, queue, datetime, paho.mqtt.client as mqtt, configparser, urllib.request, socket
 from gps import *
+
+# Read the MQTT broker settings from the config file
+config = configparser.ConfigParser(inline_comment_prefixes=';')
+config.read('gps2mqtt.ini')
+mqtt_broker = config['MQTT']['broker']
+port_value = config['MQTT']['port']
+mqtt_port = int(port_value.split(';')[0].strip()) 
+mqtt_username = config['MQTT']['username']  
+mqtt_password = config['MQTT']['password'] 
+mqtt_topic_prefix = config['MQTT']['topic_prefix'] 
+mqtt_retain = config['MQTT'].get('retain').lower() in ['true', 'yes', '1']
+debug = config['General'].get('debug').lower() in ['true', 'yes', '1']
+traccar_enabled = config['Traccar'].get('enabled').lower() in ['true', 'yes', '1']
+TRACCARURL = config['Traccar']['url']
+TRACCARID = config['Traccar']['id'] 
 
 def on_connect(client, userdata, flags, rc):
     if debug:
@@ -22,6 +37,49 @@ def meters_to_feet(meters):
 
 def meters_per_second_to_mph(mps):
     return mps * 2.23694
+
+# Prepare GPS Data for Traccar
+def generate_traccar_report(report):
+    pos = {}
+    
+    # Extract the necessary data from the report
+    if hasattr(report, 'lat'):
+        pos['lat'] = report.lat
+    if hasattr(report, 'lon'):
+        pos['lon'] = report.lon
+    if hasattr(report, 'alt'):
+        pos['alt'] = report.alt
+    if hasattr(report, 'speed'):
+        pos['speed'] = meters_per_second_to_mph(report.speed)
+    if hasattr(report, 'track'):
+        pos['track'] = report.track
+    if hasattr(report, 'epx'):
+        pos['epx'] = report.epx
+    if hasattr(report, 'epy'):
+        pos['epy'] = report.epy
+    if hasattr(report, 'epv'):
+        pos['epv'] = report.epv
+    
+    # Create the Traccar report message
+    msg_parts = []
+    for key, value in pos.items():
+        msg_parts.append(f"{key}={value}")
+    
+    msg = '&' + '&'.join(msg_parts)
+    
+    return msg
+
+# Send a report to the Traccar server
+def send_report(msg):
+    msg = msg + ('&sendtime=%f' % (time.time()))
+    url = '%s/?id=%s&timestamp=%d%s' % (TRACCARURL, TRACCARID, int(time.time()), msg)
+    print(url)
+    try:
+        r = urllib.request.urlopen(url)
+        return 0
+    except urllib.error.URLError as e:
+        print(f"Error in send_report: {e}")
+        return 1
 
 # Convert the track value to a compass direction
 def track_to_compass_direction(track):
@@ -62,25 +120,15 @@ def ensure_mqtt_connection():
         print("MQTT connection lost. Reconnecting...")
         client.reconnect()
 
-# Read the MQTT broker settings from the config file
-config = configparser.ConfigParser()
-config.read('gps2mqtt.ini')
-mqtt_broker = config['MQTT']['broker']
-mqtt_port = config['MQTT']['port']  
-mqtt_username = config['MQTT']['username']  
-mqtt_password = config['MQTT']['password'] 
-mqtt_topic_prefix = config['MQTT']['topic_prefix'] 
-mqtt_retain = config['MQTT'].getboolean('retain')
-debug = config['General'].getboolean('debug')
-
+print(mqtt_broker)
 # Connect to the MQTT broker
-with mqtt.Client() as client:
-    client.username_pw_set(mqtt_username, mqtt_password)
-    client.on_connect = on_connect
-    client.on_publish = on_publish
-    client.on_disconnect = on_disconnect
-    client.loop_start()
-    client.connect(mqtt_broker, mqtt_port, 60)
+client = mqtt.Client()
+client.username_pw_set(mqtt_username, mqtt_password)
+client.on_connect = on_connect
+client.on_publish = on_publish
+client.on_disconnect = on_disconnect
+client.loop_start()
+client.connect(mqtt_broker, mqtt_port, 60)
 
 # Initialize variables
 num_reports = 0
@@ -115,6 +163,10 @@ while True:
 
     # Publish the status of the GPS fix
     if report['class'] == 'TPV':
+        if traccar_enabled:
+            msg = generate_traccar_report(report)
+            send_report(msg)
+
         if hasattr(report, 'mode'):
             status = {1: "NO FIX", 2: "2D FIX", 3: "3D FIX"}.get(report.mode, "UNKNOWN")
             if status != last_values.get('status'):
