@@ -11,14 +11,14 @@ ignore_speed = 3            ; Ignore speeds below this value (mph)
 
 [MQTT]
 enabled = true              ; Enable MQTT support
-broker = 192.168.142.2      ; IP address of your MQTT broker
+broker = 127.0.0.1          ; IP address of your MQTT broker
 port = 1883                 ; Port of your MQTT broker
-username = hassio           ; Username for your MQTT broker
-password = hassio           ; Password for your MQTT broker (optional)  
+username = username         ; Username for your MQTT broker
+password = password           ; Password for your MQTT broker (optional)  
 topic_prefix = gps          ; MQTT topic prefix
 retain = true               ; Retain MQTT messages
 
 [Traccar]
 enabled = true                  	; Enable Traccar support
-url = http://192.99.145.230:5055	; URL of your Traccar server
+url = http://demo.traccar.org:5055	; URL of your Traccar server (OsmAnd protocol is used for Traccar server, default port is 5055)
 id = 101                		    ; ID of your Traccar device
