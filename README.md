@@ -43,22 +43,24 @@ There sample ini file is fully documented. In an effort to reduce load on the MQ
 
 ## Installation
 
-1. Clone the repository:
+1. GPSD (https://gpsd.gitlab.io/gpsd/) needs to be installed. Follow the directions for your platform. 
+
+2. Install gpsd-clients and verify that gpsd is working correctly (example: CGPS)
+
+3. Clone the repository:
 ```
 git clone https://github.com/rv10guy/gps2mqtt.git
 ```
 
-2. Change to the `gps2mqtt` directory:
+4. Change to the `gps2mqtt` directory:
 ```
 cd gps2mqtt
 ```
 
-3. Install the required Python libraries:
+5. Install the required Python libraries:
 ```
 pip install -r requirements.txt
 ```
-
-4. Install and test gpsd on your platform.
 
 ## Usage
 Run the application with:
