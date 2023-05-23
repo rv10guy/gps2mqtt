@@ -7,8 +7,8 @@ from gps import *
 # Read the MQTT broker settings from the config file
 config = configparser.ConfigParser(inline_comment_prefixes=';')
 config.read('gps2mqtt.ini')
-log_level = config['Logging']['level'].upper()
-log_file = config['Logging'].get('logfile')
+log_level = config['General']['logging'].upper()
+log_file = config['General'].get('logfile')
 interval_always = int(config['General']['interval_always'])
 interval_move = int(config['General']['interval_move'])
 interval_track = int(config['General']['interval_track'])
