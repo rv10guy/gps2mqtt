@@ -95,22 +95,9 @@ def send_report(msg):
         logging.error(f"Error in send_report: {e}")
         return 1
 
-def calculate_2d_accuracy(report):
-    if hasattr(report, 'epx') and hasattr(report, 'epy'):
-        return round(meters_to_feet(math.sqrt(report.epx**2 + report.epy**2)), -1)
-    else:
-        return None
+def calculate_accuracy(hdop):
+    return round(meters_to_feet(hdop * 5), 1)
 
-def calculate_3d_accuracy(report):
-    if hasattr(report, 'epx') and hasattr(report, 'epy') and hasattr(report, 'epv'):
-        return round(meters_to_feet(math.sqrt(report.epx**2 + report.epy**2 + report.epv**2)), -1)
-    else:
-        return None
-
-def count_used_satellites(report):
-    if 'satellites' in report:
-        return sum(1 for sat in report['satellites'] if sat['used'])
-    return None
 
 # Convert the track value to a compass direction
 def track_to_compass_direction(track):
@@ -121,24 +108,31 @@ def track_to_compass_direction(track):
     index = int((track + 22.5) % 360 // 45)
     return directions[index]
 
-# Convert the HDOP value to an accuracy in feet
-def hdop_to_accuracy_feet(hdop):
-    accuracy_meters = hdop * 5
-    return meters_to_feet(accuracy_meters)
-
 # Initialize the GPS session
 def init_gps_session():
-    return gps(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
+    global session
+    session = gps(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
     logging.info("GPS session initialized")
+    return session
 
 # Worker thread that reads GPS reports from the GPS session and puts them in a queue
 def gps_reports_worker():
+    global session
+    last_report_time = time.monotonic()
     while True:
         try:
             report = session.next()
             gps_reports_queue.put(report)
+            last_report_time = time.monotonic()
         except StopIteration:
             continue
+
+        # Check if no report has been received in the last minute
+        if time.monotonic() - last_report_time > 60:
+            logging.warning("No GPS report received in the last minute. Reinitializing GPS session.")
+            session.close()
+            session = init_gps_session()
+            last_report_time = time.monotonic()
 
 # Start the GPS worker thread
 def start_gps_worker_thread():
@@ -159,10 +153,9 @@ def mqtt_process_and_publish(report, attr, conversion=None, threshold=None, topi
             new_value = conversion(new_value)
         if threshold and new_value < threshold:
             new_value = 0
-        if new_value != last_values.get(attr):
-            client.publish(mqtt_topic_prefix + "/" + topic_suffix, str(new_value), retain=mqtt_retain)
-            logging.debug("{attr.capitalize()}: {new_value} - Published to MQTT broker")
-            last_values[attr] = new_value
+        client.publish(mqtt_topic_prefix + "/" + topic_suffix, str(new_value), retain=mqtt_retain)
+        logging.debug(f"{attr.capitalize()}: {new_value} - Published to MQTT broker")
+        last_values[attr] = new_value
 
 def make_mqtt_report(report):
     data_to_process = [
@@ -171,15 +164,14 @@ def make_mqtt_report(report):
         ('alt', meters_to_feet, None, 'altitude'),
         ('speed', meters_per_second_to_mph, ignore_speed, 'speed'),
         ('track', track_to_compass_direction, None, 'direction'),
-        ('cep', calculate_2d_accuracy, None, '2D_Accuracy'),
-        ('sep', calculate_3d_accuracy, None, '3D_Accuracy'),
-        ('satellites', count_used_satellites, None, 'satellites'),
+        ('hdop', calculate_accuracy, None, 'accuracy'),
+        ('uSat', None, None, 'used_satellites'),
+        ('nSat', None, None, 'visible_satellites'),
     ]
 
     for attr, conversion, threshold, topic_suffix in data_to_process:
         if attr in report:
             mqtt_process_and_publish(report, attr, conversion, threshold, topic_suffix)
-
 
 def bearing_change(b1, b2):
     r = (b2-b1) % 360.0
@@ -194,12 +186,14 @@ if log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
 # Set up logging
 log_handlers = [logging.StreamHandler()]  # Always log to console
 if log_file:
-    log_handlers.append(logging.FileHandler(log_file))  # Also log to file if specified
+    log_handlers.append(logging.StreamHandler(open(log_file, 'a')))  # Also log to file if specified
 
 # Set up logging
 logging.basicConfig(level=log_level)
 
 # Connect to the MQTT broker
+client = None
+
 if mqtt_enabled:
     client = mqtt.Client()
     client.username_pw_set(mqtt_username, mqtt_password)
@@ -213,6 +207,10 @@ if mqtt_enabled:
 num_reports = 0
 current_fix = 0
 last_values = {}
+last_report_time = 0
+last_report_time_TPV = 0
+last_report_time_SKY = 0
+dist_moved = 0
 
 # Create a queue to store GPS reports
 gps_reports_queue = queue.Queue()
@@ -222,7 +220,7 @@ session = init_gps_session()
 start_gps_worker_thread()
 
 # Initialize previous values
-prev_lat, prev_lon, prev_speed, prev_track = 0, 0, 0, 0
+prev_lat, prev_lon, prev_speed, prev_track, sat_count = 0, 0, 0, 0, 0   
 second = int(time.time())
 
 atexit.register(mqtt_disconnect, client)
@@ -251,9 +249,9 @@ while True:
         else:
             dist_moved = 0  # or some other default value, or raise an error
 
-    should_make_report = (
-        report['class'] in ['TPV', 'SKY'] and (
-            (interval_always and second % interval_always == 0) or 
+    should_make_report_TPV = (
+        report['class'] == 'TPV' and (
+            (interval_always and second - last_report_time_TPV >= interval_always) or 
             ('speed' in report and abs(meters_per_second_to_mph(prev_speed) - meters_per_second_to_mph(report.get('speed', 0))) > chg_speed) or 
             ('lat' in report and 'lon' in report and dist_moved > dist_move and (
                 (interval_move and second % interval_move == 0) or 
@@ -262,19 +260,33 @@ while True:
         )
     )
 
+    should_make_report_SKY = report['class'] == 'SKY' and (
+        (interval_always and second - last_report_time_SKY >= interval_always) or 
+        (('uSat' in report and report['uSat'] != sat_count) and (second - last_report_time_SKY >= 2))
+    )
+
+    should_make_report = should_make_report_TPV or should_make_report_SKY
+
     if should_make_report:
         logging.info("Condition met to make report")
         if mqtt_enabled:
             logging.info("Making MQTT report")
             make_mqtt_report(report)
         
-        if traccar_enabled:
+        if traccar_enabled and should_make_report_TPV:
             logging.info("Making Traccar report")
             msg = generate_traccar_report(report)
             send_report(msg)
+        
+        if report['class'] == 'TPV':
+            last_report_time_TPV = second
+            prev_lat = report.get('lat', prev_lat)
+            prev_lon = report.get('lon', prev_lon)
+            prev_speed = report.get('speed', prev_speed)
+            prev_track = report.get('track', prev_track)
+        elif report['class'] == 'SKY':
+            last_report_time_SKY = second
+            sat_count = report.get('uSat', sat_count)
             
-        prev_lat = report.get('lat', prev_lat)
-        prev_lon = report.get('lon', prev_lon)
-        prev_speed = report.get('speed', prev_speed)
-        prev_track = report.get('track', prev_track)
+        
     
