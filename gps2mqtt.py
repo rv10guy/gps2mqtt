@@ -115,10 +115,10 @@ def init_gps_session():
     logging.info("GPS session initialized")
     return session
 
-# Worker thread that reads GPS reports from the GPS session and puts them in a queue
 def gps_reports_worker():
     global session
     last_report_time = time.monotonic()
+    last_watch_time = time.monotonic()  # keep track of the last time a WATCH command was sent
     while True:
         try:
             report = session.next()
@@ -133,6 +133,12 @@ def gps_reports_worker():
             session.close()
             session = init_gps_session()
             last_report_time = time.monotonic()
+            last_watch_time = time.monotonic()  # reset the last watch time after reinitializing the session
+
+        # Send a WATCH command every 60 seconds
+        if time.monotonic() - last_watch_time > 60:
+            session.stream(gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE)
+            last_watch_time = time.monotonic()  # update the last watch time
 
 # Start the GPS worker thread
 def start_gps_worker_thread():
