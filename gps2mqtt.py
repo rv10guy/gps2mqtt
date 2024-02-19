@@ -27,6 +27,9 @@ mqtt_retain = config['MQTT'].get('retain').lower() in ['true', 'yes', '1']
 traccar_enabled = config['Traccar'].get('enabled').lower() in ['true', 'yes', '1']
 traccar_url = config['Traccar']['url']
 traccar_id = config['Traccar']['id']
+healthchecks_url = config['Healthchecks']['url']
+healthchecks_interval = int(config['Healthchecks']['interval'])  # Time interval X in minutes
+healthchecks_enabled = config['Healthchecks'].get('enabled').lower() in ['true', 'yes', '1']
 
 def on_connect(client, userdata, flags, rc):
     logging.info("Connected to MQTT broker with result code " + str(rc))
@@ -153,15 +156,27 @@ def ensure_mqtt_connection():
         client.reconnect()
 
 def mqtt_process_and_publish(report, attr, conversion=None, threshold=None, topic_suffix=''):
+    global last_ping_time
     if hasattr(report, attr):
         new_value = getattr(report, attr)
         if conversion:
             new_value = conversion(new_value)
         if threshold and new_value < threshold:
             new_value = 0
-        client.publish(mqtt_topic_prefix + "/" + topic_suffix, str(new_value), retain=mqtt_retain)
-        logging.debug(f"{attr.capitalize()}: {new_value} - Published to MQTT broker")
-        last_values[attr] = new_value
+        result = client.publish(mqtt_topic_prefix + "/" + topic_suffix, str(new_value), retain=mqtt_retain)
+        if result[0] == 0:  # Check if publish was successful
+            logging.debug(f"{attr.capitalize()}: {new_value} - Published to MQTT broker")
+            # Check if health checks are enabled and if the specified interval has elapsed
+            if healthchecks_enabled:
+                current_time = time.time()
+                if (current_time - last_ping_time) / 60 >= healthchecks_interval:
+                    try:
+                        urllib.request.urlopen(healthchecks_url)  # Send ping to healthchecks.io
+                        last_ping_time = current_time
+                        logging.info(f"Pinged healthchecks.io successfully at {datetime.datetime.now()}")
+                    except Exception as e:
+                        logging.error(f"Failed to ping healthchecks.io: {e}")
+            last_values[attr] = new_value
 
 def make_mqtt_report(report):
     data_to_process = [
@@ -217,6 +232,7 @@ last_report_time = 0
 last_report_time_TPV = 0
 last_report_time_SKY = 0
 dist_moved = 0
+last_ping_time = 0
 
 # Create a queue to store GPS reports
 gps_reports_queue = queue.Queue()
